@@ -8,6 +8,38 @@ Standalone Python load-testing script designed to evaluate **Fail2Ban HTTP flood
 
 ---
 
+## 🎯 Specific Load Values Determined (`maxretry = 60` in `findtime = 10s`)
+
+### 1. ✅ Load Value That DOES NOT Bring Down / Block the Service (Safe Load)
+- **Maximum Sustained Rate**: **Up to `5 requests per second` (`5 req/s`)** — equivalent to **`50–59 requests in 10 seconds`**.
+- **Specific Tested Parameters**:
+  - `CONCURRENCY` (`--concurrency`): **`4`** to **`5`** workers
+  - `REQUESTS_PER_SECOND` (`--rps`): **`4`** to **`5`** req/s
+  - `DURATION` (`--duration`): **`10`** seconds
+- **Result**: **100% `200 OK` responses (`0%` blocked)**, because the request volume never reaches 60 requests within any rolling 10-second window.
+
+---
+
+### 2. 🚫 Load Value That DOES Bring Down / Block Access (Trigger Threshold)
+- **Exact Critical Activation Rate**: **Starting at `6 requests per second` (`6 req/s`)** — reaching **`60 requests within 10 seconds`**.
+- **Specific Tested Parameters That Trigger the Ban**:
+  1. **Minimum Ban-Triggering Load (`10 req/s`)**:
+     - `CONCURRENCY` (`--concurrency`): **`10`** workers
+     - `REQUESTS_PER_SECOND` (`--rps`): **`10`** req/s
+     - `DURATION` (`--duration`): **`15`** seconds
+     - **Behavior**: The first **`~60–64` requests** succeed (within the first ~6 seconds), and immediately afterward Fail2Ban bans the IP via `iptables-allports`, blocking the remaining **44%** of requests.
+  2. **High-Volume Flood Load (`150 req/s`)**:
+     - `CONCURRENCY` (`--concurrency`): **`150`** workers
+     - `REQUESTS_PER_SECOND` (`--rps`): **`150`** req/s
+     - `DURATION` (`--duration`): **`30`** segundos
+     - **Behavior**: The 60-request limit is exceeded in **less than 1 second** (`~85` requests pass before Fail2Ban's polling cycle inserts the firewall rule), blocking **95%** of total requests (`1,782` blocked out of `1,867`).
+
+### 📌 Quick Summary:
+- **Safe Limit (Does NOT block)**: **$\le 5\text{ req/s}$** (`< 60 requests per 10s`)
+- **Exact Ban Point (DOES block)**: **$\ge 6\text{ req/s}$** (`\ge 60 requests per 10s`)
+
+---
+
 ## 🛠️ 1. Steps Followed to Modify `flood.py`
 
 The original lab script (`attacker/flood.py`) was hardcoded to run inside an isolated Docker container and only targeted static hostnames (`victim-protected`, `victim-unprotected`) on port `80` using environment variables.
@@ -43,16 +75,11 @@ banaction = iptables-allports
 ### Critical Threshold Calculation:
 $$\text{Threshold Rate} = \frac{\text{maxretry}}{\text{findtime}} = \frac{60\text{ requests}}{10\text{ seconds}} = 6.0\text{ requests/second}$$
 
-- **Load that DOES NOT trigger a ban (Service stays available):**
-  - Any sustained rate **$< 6\text{ req/s}$** (fewer than `60` requests within any rolling `10s` window), such as **`4 req/s`** (`40 requests` in `10s`) or **`5 req/s`** (`50 requests` in `10s`).
-- **Load that DOES trigger a ban / cuts off access:**
-  - Any sustained rate **$\ge 6\text{ req/s}$** (reaching `60` requests within `10s`), such as **`10 req/s`** (triggers the `iptables` ban at ~`6.4s`) or **`150 req/s`** (triggers the ban in `< 1s`).
-
 ---
 
 ## 🧪 3. Step-by-Step Methodology & Experimental Results
 
-### Step 1: Test Safe Load (Does NOT bring down / ban the service)
+### Step 1: Test Safe Load (`4 req/s` — Does NOT bring down / ban the service)
 Run `flood.py` at **`4 requests/s`** with **`4 concurrent workers`** for **`10 seconds`** (`40 total requests < 60 maxretry`):
 
 ```powershell
@@ -73,7 +100,6 @@ python flood.py localhost 8081 --concurrency 4 --rps 4 --duration 10
   RESULT for localhost:5173: total=40 ok(200)=40 blocked/failed=0
   -> 0% of responses were non-200
 ```
-- **Conclusion:** At **`4 req/s`** (up to **`5 req/s`**), **0% of requests fail** and the service remains 100% accessible.
 
 ---
 
@@ -99,7 +125,6 @@ python flood.py localhost 8081 --concurrency 10 --rps 10 --duration 15
   RESULT for localhost:5173: total=115 ok(200)=64 blocked/failed=51
   -> 44% of responses were non-200
 ```
-- **Conclusion:** As soon as the request count reaches **`64`** (~6.4 seconds at `10 req/s`), Fail2Ban detects the `maxretry = 60` violation in `/var/log/nginx/access.log` and inserts the `iptables-allports` drop rule. Notice `ok(200)` freezes at **`64`** for the rest of the test.
 
 ---
 
